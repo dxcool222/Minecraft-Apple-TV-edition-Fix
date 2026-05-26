@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>application-identifier</key>
+	<string>RR2V8CRZUY.com.mojang.minecraftappletv</string>
+
+	<key>com.apple.developer.team-identifier</key>
+	<string>RR2V8CRZUY</string>
+
+	<!--
+	  keychain-access-groups intentionally omitted. The tweak's SecItem*
+	  fishhook strips kSecAttrAccessGroup from every keychain query so
+	  securityd falls back to the implicit <TEAM>.<bundleId> group every
+	  signed app has by default. No explicit entries needed.
+
+	  If you want belt-and-braces (e.g. you're disabling the fishhook),
+	  add:
+	    <key>keychain-access-groups</key>
+	    <array>
+	      <string>RR2V8CRZUY.com.mojang.minecraftappletv</string>
+	    </array>
+	-->
+
+
+	<!--
+	  iCloud / push / app-groups intentionally absent. The tweak stubs out
+	  CloudKit, registerForRemoteNotifications, and UN auth; including those
+	  entitlements without the matching provisioning profile causes signing
+	  to fail without unlocking any functionality.
+	-->
+
+	<!--
+	  Flip to <true/> if you need to attach Xcode / LLDB to the running app.
+	  Distribution sideloads keep this false.
+	-->
+	<key>get-task-allow</key>
+	<false/>
+</dict>
+</plist>

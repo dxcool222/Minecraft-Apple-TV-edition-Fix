@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Build / temp artifacts
+dd_build/
+ipa_inject_work/
+build_inject.log
+
+# Xcode user data
+*.xcuserstate
+xcuserdata/
+
+# Generated/derived packages
+*.ipa
+*.zip
+Payload/
+
