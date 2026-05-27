@@ -191,10 +191,6 @@ Install `ldid` and make sure your shell can find it with `which ldid`.
 
 Make sure full Xcode is installed and the Apple TV SDK is available with `xcodebuild -showsdks`.
 
-## Git Notes
-
-Do not commit generated IPAs, extracted Payload folders, temporary build folders, or `build_inject.log`. These are already ignored by `.gitignore`.
-
 ## Disclaimer
 
 This is an independent preservation and compatibility project for legally owned copies of Minecraft tvOS. It is not affiliated with, endorsed by, or associated with Mojang Studios, Microsoft, or Apple Inc. Do not distribute game binaries or copyrighted assets.
