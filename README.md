@@ -1,262 +1,200 @@
-# Minecraft tvOS Restoration Project
+# Minecraft tvOS Storage Fix
 
-`tweak-1.3` builds and injects `MinecraftStorageFix.framework`, a runtime compatibility layer for legacy **Minecraft: Apple TV Edition / Minecraft Bedrock tvOS** builds.
+`tweak-1.3` is a restoration tweak for legacy Minecraft tvOS builds. It is meant for non-jailbroken Apple TVs where the original game crashes or fails because it expects App Store iCloud services that are no longer available to a sideloaded copy.
 
-The goal is practical: make a decrypted tvOS IPA boot and keep local gameplay data working in a modern sideload environment where the original game expects App Store entitlements, iCloud containers, CloudKit, and writable paths that no longer behave the way the old engine expects.
+The fix is packaged as `MinecraftStorageFix.framework`. The build script injects that framework into a decrypted Minecraft tvOS IPA, patches the 1.1.5 game binary, and repacks the app so it can run with local world storage instead of iCloud world storage.
 
-This repository does **not** contain Minecraft IPAs or copyrighted game assets. You provide your own legally obtained decrypted IPA.
+No setup is required inside the game. Once the framework is loaded, it installs its storage, CloudKit, iCloud, keychain, and FTP fixes automatically.
 
-## What It Does
+No jailbreak is required.
 
-- Builds `MinecraftStorageFix.framework` for `appletvos`.
-- Injects the framework into `Payload/minecraftappletv.app/Frameworks/`.
-- Adds an `LC_LOAD_DYLIB` command so the framework loads at app startup.
-- Applies two static ARM64 patches to the tvOS **1.1.5** `minecraftappletv` binary.
-- Re-signs the modified app binary with `ldid`.
-- Repackages the result as `*_MCStorageFix.ipa`.
+This repo does not include Minecraft IPAs or copyrighted game assets. You need your own legally obtained decrypted IPA.
 
-This is **not** a `hybrid_*` asset-merge builder. If you have a hybrid IPA from another workflow, you can pass it in as input, but this script still produces a framework-injected `*_MCStorageFix.ipa`.
+## What This Fixes
 
-## Current Target
+The original tvOS version expects a real App Store environment:
 
-The automated binary patch step currently targets:
+- iCloud and CloudKit entitlements
+- iCloud account state
+- Cloud-backed world sync
+- writable game folders under `Library/games` and `Documents/games`
+- keychain and Xbox service entitlements
 
-- Minecraft tvOS **1.1.5**
-- Main executable name: `minecraftappletv`
-- Expected app path inside IPA: `Payload/minecraftappletv.app`
+When the app is sideloaded onto a non-jailbroken Apple TV, those assumptions break. The common failures are startup crashes, iCloud setup hangs, failed world sync, worlds not saving, or no practical way to get saved worlds off the device.
 
-`scripts/patch_game_binary.py` validates the expected 1.1.5 instruction bytes before writing. If the signatures do not match, the script stops instead of blindly patching the wrong binary.
+This tweak changes the game to use local storage and exposes that storage over FTP.
 
-## Main Runtime Fixes
+## What The Tweak Does
 
-### Local Storage / VFS Redirect
+### Saves worlds locally
 
-Legacy Bedrock code writes to paths such as:
+Minecraft writes data through both POSIX file calls and Objective-C filesystem APIs. The tweak catches both paths and redirects game storage into a writable folder inside the app sandbox.
 
-```text
-Library/games/
-Documents/games/
-tmp/Temp/games/
-tmp/minecraftpe/
-```
+The main storage root is `Library/Caches/MinecraftStorageFix/GameData/vfs` inside the app container.
 
-Modern sideloaded tvOS apps can hit sandbox denials or lose data in temporary locations. `MinecraftStorageFix` redirects those game-data paths into a writable cache-backed mirror:
+The redirected game roots include `Library/games`, `Documents/games`, `tmp/Temp/games`, and `tmp/minecraftpe`.
 
-```text
-$HOME/Library/Caches/MinecraftStorageFix/GameData/vfs/
-```
+This keeps worlds, options, skins, icons, and related game files in local storage that survives relaunches.
 
-The redirect is installed in two places:
+### Bypasses iCloud and CloudKit crashes
 
-- POSIX hooks via `fishhook` for calls like `open`, `fopen`, `mkdir`, `stat`, `opendir`, `rename`, `unlink`, `remove`, and Darwin variants such as `stat$INODE64`.
-- `NSFileManager` / `NSData` swizzles for Foundation-level file checks, directory enumeration, and world-icon reads.
+The original game tries to initialize iCloud and CloudKit during startup and world sync. On a sideloaded Apple TV, those calls can fail hard enough to crash or block the game.
 
-Bootstrap code also seeds required local files, migrates existing data into the VFS mirror, syncs skin/preferences data, and prepares achievement/world icon paths.
+The tweak provides safe local replacements:
 
-### iCloud / CloudKit Compatibility
+- fake ubiquity identity token
+- fake CloudKit container and database responses
+- safe empty success callbacks for CloudKit operations
+- iCloud notification callbacks turned into no-ops
+- runtime vtable patches for the deeper C++ iCloud gates
+- guards for sync paths that can create failed cloud backup state
 
-The original game can enter cloud-save paths even when the sideloaded app has no valid iCloud container. The framework prevents those unavailable services from blocking startup:
+The result is simple: the game can boot and save worlds without a working iCloud container.
 
-- Returns a stable fake ubiquity identity token.
-- Swizzles CloudKit container creation to a fake local container.
-- Wraps CloudKit query/modify completion blocks with safe empty-success responses.
-- Silences iCloud account-change callbacks that otherwise drive broken cloud-state evaluation.
-- Patches C++ iCloud gate vtable slots at runtime where Objective-C hooks are not enough.
+### Lets you pull worlds off over FTP
 
-### Marketplace / Offline Catalog Support
+The tweak starts a plain FTP server inside the game process.
 
-The project includes local marketplace/catalog helpers for the old engine’s offline expectations:
+Connection details:
 
-- Seeds working `catalog_info.json` stub data with the layout expected by the 1.1.5 binary.
-- Bridges local identity values used by entitlement/cache code.
-- Applies static ownership/UI patches during IPA injection:
-  - `sub_1006634DC` -> force catalog ownership gate true.
-  - `sub_100369B34` -> force skin/pack padlock UI evaluator false.
+- Host: your Apple TV IP address
+- Port: `2121`
+- Protocol: plain FTP, no TLS
+- Username: anything
+- Password: anything
 
-### Sideload / Xbox Hardening
+The FTP server is rooted at the MinecraftStorageFix local storage folder. World folders are under paths like `Library/games/com.mojang/minecraftWorlds` and `Documents/games/com.mojang/minecraftWorlds`.
 
-Sideloaded builds can fail entitlement and Keychain checks, commonly showing `securityd` `-34018` behavior. The framework reduces those failures by:
+Use FileZilla or another FTP client from the same local network to back up or inspect worlds.
 
-- Removing incompatible Keychain access-group fields for Xbox Live service queries.
-- Hooking `SecItemAdd`, `SecItemCopyMatching`, `SecItemUpdate`, and `SecItemDelete`.
-- Late-binding Xbox-related Objective-C classes after they appear in the runtime.
-- Replacing unsupported push notification / authorization paths with safe local behavior.
-- Adding StoreKit receipt/payment shims needed by some offline chooser flows.
+### Handles sideload entitlement issues
 
-### Local Device File Access
+Sideloaded builds can fail keychain, notification, StoreKit, and Xbox-related entitlement checks. The tweak patches the pieces that matter for local play:
 
-An embedded FTP server is started on device for local LAN access to the VFS-backed game data:
+- Xbox Live keychain access-group failures
+- `SecItemAdd`, `SecItemCopyMatching`, `SecItemUpdate`, and `SecItemDelete`
+- late-loading Xbox and MSA runtime classes
+- push notification registration paths
+- StoreKit receipt and payment checks used by some offline UI paths
 
-- FTP control port: `2121`
-- Passive data range: `12000-12999`
-- Root: MinecraftStorageFix game-data sandbox
+### Applies 1.1.5 binary patches
 
-This is intended for local debugging and world-file management on Apple TV hardware.
+The build script runs `scripts/patch_game_binary.py` against the main `minecraftappletv` executable.
 
-## Build And Inject
+Current patches target Minecraft tvOS 1.1.5:
 
-### Requirements
+- `sub_1006634DC`: force catalog ownership true
+- `sub_100369B34`: hide skin and pack padlocks
+
+The patcher checks the original bytes before writing. If the binary does not match the expected 1.1.5 executable, it stops instead of patching the wrong file.
+
+## Supported Version
+
+Current target:
+
+- Game version: Minecraft tvOS 1.1.5
+- App bundle: `Payload/minecraftappletv.app`
+- Main executable: `minecraftappletv`
+- Output name: `Minecraft_1.1.5_MCStorageFix.ipa` by default
+
+This project injects the framework and applies the 1.1.5 binary patches. It does not merge game assets or build alternate game versions.
+
+## Requirements
 
 - macOS
-- Full Xcode installed at `/Applications/Xcode.app`
-- Apple TV SDK (`appletvos`)
+- full Xcode installed at `/Applications/Xcode.app`
+- Apple TV SDK
 - `python3`
-- `ldid` on `PATH`
+- `ldid`
 - `zip` and `unzip`
 
-`optool` is **not** required. The repo uses `scripts/inject_dylib.py` to add the Mach-O load command. `otool` is only used for verification.
+`optool` is not needed. The repo includes its own Python load-command injector.
 
-### One Command
+## Build
 
-From the repository root:
+Put your decrypted Minecraft tvOS 1.1.5 IPA in the repo root, then run `./scripts/build_and_inject_ipa.sh "Minecraft_1.1.5_decrypted.ipa"`.
 
-```bash
-./scripts/build_and_inject_ipa.sh "Minecraft_1.1.5_decrypted.ipa"
-```
+Default output: `Minecraft_1.1.5_MCStorageFix.ipa`
 
-Default output:
+Custom output: `./scripts/build_and_inject_ipa.sh "Minecraft_1.1.5_decrypted.ipa" "Minecraft_tvOS_Restored.ipa"`
 
-```text
-Minecraft_1.1.5_MCStorageFix.ipa
-```
+Help: `./scripts/build_and_inject_ipa.sh --help`
 
-Custom output:
+`BUILD_NOW.command` is a Finder-friendly wrapper around the same script. With no arguments it uses `Minecraft_1.1.5_decrypted.ipa` as input and writes `Minecraft_1.1.5_MCStorageFix.ipa`.
 
-```bash
-./scripts/build_and_inject_ipa.sh "Minecraft_1.1.5_decrypted.ipa" "Minecraft_tvOS_Restored.ipa"
-```
+## Build Pipeline
 
-Help:
+The build script does the following:
 
-```bash
-./scripts/build_and_inject_ipa.sh --help
-```
+1. Builds `MinecraftStorageFix.framework` with Xcode for Apple TV.
+2. Extracts the input IPA into `ipa_inject_work`.
+3. Copies the framework into `Payload/minecraftappletv.app/Frameworks`.
+4. Runs `patch_game_binary.py` on `minecraftappletv`.
+5. Runs `inject_dylib.py` so the app loads `MinecraftStorageFix.framework` at startup.
+6. Re-signs the main executable with `ldid`.
+7. Repackages the final IPA.
 
-On macOS, `BUILD_NOW.command` is a double-click wrapper around the same script. With no arguments, it uses:
+The full build log is written to `build_inject.log`.
 
-```text
-input  = Minecraft_1.1.5_decrypted.ipa
-output = Minecraft_1.1.5_MCStorageFix.ipa
-```
+## Project Layout
 
-## Pipeline
+- `MinecraftStorageFix.xcodeproj`: Xcode project
+- `MinecraftStorageFix/MinecraftStorageFix.m`: startup hook installation
+- `MinecraftStorageFix/Modules/VFS`: local storage redirect, bootstrap, migrations
+- `MinecraftStorageFix/Modules/CloudKit`: fake CloudKit, iCloud bypasses, vtable patches
+- `MinecraftStorageFix/Modules/Server`: built-in FTP server
+- `MinecraftStorageFix/Modules/Icons`: world and achievement icon handling
+- `MinecraftStorageFix/Modules/Marketplace`: local catalog and entitlement helpers
+- `MinecraftStorageFix/Modules/Xbox`: keychain and Xbox hardening
+- `MinecraftStorageFix/Modules/Sideload`: sideload entitlement and StoreKit fixes
+- `MinecraftStorageFix/Modules/Lifecycle`: startup watchdog and diagnostics
+- `MinecraftStorageFix/Modules/Vendor`: fishhook
+- `scripts/build_and_inject_ipa.sh`: main build and injection script
+- `scripts/inject_dylib.py`: Mach-O load-command injector
+- `scripts/patch_game_binary.py`: Minecraft tvOS 1.1.5 binary patcher
+- `BUILD_NOW.command`: macOS double-click build helper
 
-```mermaid
-graph TD
-    A[Input IPA] --> B[Unzip to ipa_inject_work]
-    C[MinecraftStorageFix source] --> D[xcodebuild appletvos framework]
-    D --> E[Copy framework into app Frameworks directory]
-    B --> F[Find Payload/minecraftappletv.app/minecraftappletv]
-    E --> F
-    F --> G[patch_game_binary.py]
-    G --> H[inject_dylib.py adds LC_LOAD_DYLIB]
-    H --> I[ldid -S]
-    I --> J[Zip Payload into output IPA]
-```
+## Debugging
 
-Behind the scenes:
+Production logging is off by default in `MinecraftStorageFix/Modules/Log/MCFIXLog.h`.
 
-1. Builds `MinecraftStorageFix.framework` into `dd_build/`.
-2. Extracts the IPA into `ipa_inject_work/`.
-3. Copies the framework into the app bundle.
-4. Runs `patch_game_binary.py` against `minecraftappletv`.
-5. Runs `inject_dylib.py` with:
+Set `MCFIX_PRODUCTION_SILENT` to `0` and rebuild if you need device logs.
 
-   ```text
-   @executable_path/Frameworks/MinecraftStorageFix.framework/MinecraftStorageFix
-   ```
+Useful log categories:
 
-6. Re-signs the main executable with `ldid -S`.
-7. Verifies the load command with `otool -L`.
-8. Writes the final IPA and logs details to `build_inject.log`.
-
-## Repository Layout
-
-```text
-MinecraftStorageFix.xcodeproj/       Xcode project
-MinecraftStorageFix/                 Framework source
-  MinecraftStorageFix.m              Main +load orchestration and runtime hooks
-  Modules/
-    CloudKit/                        Fake containers, completion shims, vtable patches
-    VFS/                             POSIX hooks, path redirect, bootstrap, NSFileManager swizzles
-    Marketplace/                     Offline catalog and entitlement helpers
-    Xbox/                            Keychain and Xbox runtime hardening
-    Icons/                           World and achievement icon handling
-    Server/                          FTP / local file-management support
-    Sideload/                        Sideload entitlement, StoreKit, notification fixes
-    Lifecycle/                       Platform capture and watchdog diagnostics
-    Vendor/                          fishhook
-scripts/
-  build_and_inject_ipa.sh            Build, patch, inject, repackage
-  inject_dylib.py                    Mach-O LC_LOAD_DYLIB injector
-  patch_game_binary.py               1.1.5 ARM64 binary patches
-  analyze_mcfix_log.py               Log analysis helper
-  scan_vfs_tree.py                   VFS inspection helper
-  paths_to_tree.py                   Path-list formatting helper
-BUILD_NOW.command                    macOS double-click wrapper
-entitlements.plist                   Signing entitlement template/reference
-```
-
-## Diagnostics
-
-Most production builds are quiet by default. Logging is controlled in `MinecraftStorageFix/Modules/Log/MCFIXLog.h`:
-
-```objc
-#define MCFIX_PRODUCTION_SILENT 1
-```
-
-For debugging, rebuild with logging enabled and filter device logs for:
-
-- `MCFIX Boot` - startup, bootstrap, migrations
-- `MCFIX VFS` - storage redirects and VFS setup
-- `MCFIX CK` - CloudKit/iCloud shims
-- `MCFIX Icon` - world and achievement icon paths
-- `MCFIX XBL` - Xbox/keychain hardening
-- `MCFIX Err` - errors and failed runtime patches
-
-The lifecycle watchdog polls startup progress while the game is booting and can help identify stalls before the main menu appears.
+- `MCFIX Boot`: startup and migrations
+- `MCFIX VFS`: storage redirect setup
+- `MCFIX CK`: CloudKit and iCloud shims
+- `MCFIX Icon`: world and achievement icon paths
+- `MCFIX XBL`: Xbox and keychain handling
+- `MCFIX Err`: runtime patch or filesystem errors
 
 ## Troubleshooting
 
-### `ERROR: missing ...ipa`
+### The app still crashes
 
-The input IPA path is wrong or the file is not in the repo root. Pass an absolute path or place the IPA next to the script.
+Check `build_inject.log` first. Make sure the framework was copied into the app and the load command injection step succeeded.
 
-### `ldid not on PATH`
+### Worlds do not show over FTP
 
-Install `ldid` and make sure it is visible to your shell:
+Launch the game once after installing the patched IPA. The VFS tree is created during startup. Then connect to your Apple TV IP on port `2121` using plain FTP.
 
-```bash
-which ldid
-```
+### The patcher says the signature is missing
 
-### `xcodebuild` fails
+The executable is not the expected Minecraft tvOS 1.1.5 binary, or it was already modified. The patcher intentionally stops in that case.
 
-Make sure full Xcode is installed, not only Command Line Tools:
+### `ldid` is missing
 
-```bash
-xcodebuild -version
-xcodebuild -showsdks | grep appletvos
-```
+Install `ldid` and make sure your shell can find it with `which ldid`.
 
-### `signature not found` or `bytes mismatch`
+### Xcode build fails
 
-The main binary does not match the expected tvOS 1.1.5 executable, or it has already been patched. Update `scripts/patch_game_binary.py` for that binary before using it on another version.
+Make sure full Xcode is installed and the Apple TV SDK is available with `xcodebuild -showsdks`.
 
-### Framework load command missing
+## Git Notes
 
-Check `build_inject.log`. The expected load command is:
-
-```text
-@executable_path/Frameworks/MinecraftStorageFix.framework/MinecraftStorageFix
-```
-
-## Notes
-
-- Generated IPAs, temporary build folders, and logs are intentionally ignored by git.
-- `dd_build/`, `ipa_inject_work/`, `build_inject.log`, `Payload/`, and `*.ipa` should stay out of the repository.
-- This is a research and preservation project for locally owned copies. Do not distribute game binaries or copyrighted assets.
+Do not commit generated IPAs, extracted Payload folders, temporary build folders, or `build_inject.log`. These are already ignored by `.gitignore`.
 
 ## Disclaimer
 
-This project is an independent historical preservation and reverse-engineering research effort. It is not affiliated with, endorsed by, or associated with Mojang Studios, Microsoft, or Apple Inc.
+This is an independent preservation and compatibility project for legally owned copies of Minecraft tvOS. It is not affiliated with, endorsed by, or associated with Mojang Studios, Microsoft, or Apple Inc. Do not distribute game binaries or copyrighted assets.
